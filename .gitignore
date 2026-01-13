@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+outputs/
+data/raw/
+data/interim/
+data/processed/
+src/**/models/
