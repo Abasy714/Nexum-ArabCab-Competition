@@ -1,0 +1,7 @@
+inventory:
+  safety_stock:
+    type: fixed
+    months: 2
+
+penalties:
+  safety_stock_violation: 5000
