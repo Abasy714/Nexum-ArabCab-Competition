@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List
 import pulp
 
 
@@ -7,41 +7,29 @@ def optimize_inventory_and_procurement(
     materials: List[str],
     suppliers: List[str],
 
-    # -----------------------------
-    # Forecasting output (input)
-    # -----------------------------
-    demand: Dict[str, Dict[str, float]],  
-    # demand[period][material]
+    # Forecast
+    demand: Dict[str, Dict[str, float]],
 
-    # -----------------------------
-    # User inputs
-    # -----------------------------
+    # Inventory
     initial_inventory: Dict[str, float],
     safety_stock: Dict[str, float],
 
+    # Supplier configuration
     supplier_materials: Dict[str, List[str]],
     purchase_price: Dict[str, Dict[str, float]],
-    lead_time: Dict[str, int],
-    supplier_capacity: Dict[str, float],
+    lead_time: Dict[str, Dict[str, int]],      # supplier → material → months
+    supplier_capacity: Dict[str, float],       # per supplier per period
 
-    # -----------------------------
-    # Cost & policy parameters
-    # -----------------------------
+    # Costs & policies
     holding_cost: Dict[str, float],
     penalty_cost: float,
-    supplier_risk: Dict[str, float],
-    payment_adjustment: Dict[str, float],
+    supplier_risk: Dict[str, float],            # $/ton
+    payment_adjustment: Dict[str, float],        # $/ton
     monthly_budget: Dict[str, float],
-
 ):
     """
     MILP-based inventory & procurement optimization.
-
-    This function is intentionally UI-agnostic and forecasting-agnostic.
-    It can be called from:
-    - Streamlit
-    - React (via API)
-    - Batch pipeline
+    UI-agnostic, forecasting-agnostic.
     """
 
     # =========================================================
@@ -54,7 +42,6 @@ def optimize_inventory_and_procurement(
     # DECISION VARIABLES
     # =========================================================
 
-    # Order quantity
     order = pulp.LpVariable.dicts(
         "Order",
         [(t, s, m) for t in periods for s in suppliers for m in supplier_materials[s]],
@@ -62,14 +49,12 @@ def optimize_inventory_and_procurement(
         cat="Continuous"
     )
 
-    # Inventory level
     inventory = pulp.LpVariable.dicts(
         "Inventory",
         [(t, m) for t in periods for m in materials],
         lowBound=0
     )
 
-    # Safety stock shortfall (soft constraint)
     shortage = pulp.LpVariable.dicts(
         "SafetyShortage",
         [(t, m) for t in periods for m in materials],
@@ -77,7 +62,7 @@ def optimize_inventory_and_procurement(
     )
 
     # =========================================================
-    # INVENTORY BALANCE CONSTRAINTS
+    # INVENTORY BALANCE
     # =========================================================
 
     for i, t in enumerate(periods):
@@ -86,9 +71,12 @@ def optimize_inventory_and_procurement(
             arrivals = []
             for s in suppliers:
                 if m in supplier_materials[s]:
-                    lt = lead_time[s]
-                    if i - lt >= 0:
-                        arrivals.append(order[(periods[i - lt], s, m)])
+                    lt = lead_time.get(s, {}).get(m, 1)
+                    order_period_index = i - lt
+                    
+                    # Only count arrivals from orders placed within planning horizon
+                    if 0 <= order_period_index < len(periods):
+                        arrivals.append(order[(periods[order_period_index], s, m)])
 
             if i == 0:
                 model += (
@@ -107,7 +95,7 @@ def optimize_inventory_and_procurement(
                 )
 
     # =========================================================
-    # SUPPLIER CAPACITY CONSTRAINTS
+    # SUPPLIER CAPACITY
     # =========================================================
 
     for t in periods:
@@ -129,7 +117,7 @@ def optimize_inventory_and_procurement(
             model += inventory[(t, m)] + shortage[(t, m)] >= safety_stock[m]
 
     # =========================================================
-    # BUDGET CONSTRAINT
+    # BUDGET
     # =========================================================
 
     for t in periods:
@@ -144,7 +132,7 @@ def optimize_inventory_and_procurement(
         )
 
     # =========================================================
-    # OBJECTIVE FUNCTION
+    # OBJECTIVE
     # =========================================================
 
     model += (
@@ -169,19 +157,22 @@ def optimize_inventory_and_procurement(
 
     model.solve(pulp.PULP_CBC_CMD(msg=False))
 
+    status = pulp.LpStatus[model.status]
+    if status != "Optimal":
+        return {"status": status, "orders": [], "inventory": [], "shortages": [], "kpis": {}}
+
     # =========================================================
-    # OUTPUT (JSON-FRIENDLY)
+    # OUTPUT
     # =========================================================
 
     results = {
-        "status": pulp.LpStatus[model.status],
+        "status": status,
         "orders": [],
         "inventory": [],
         "shortages": [],
         "kpis": {}
     }
 
-    # Orders
     for t, s, m in order:
         q = order[(t, s, m)].value()
         if q and q > 0:
@@ -190,42 +181,32 @@ def optimize_inventory_and_procurement(
                 "supplier": s,
                 "material": m,
                 "quantity": round(q, 2),
-                "unit_cost": purchase_price[s][m]
+                "unit_cost": purchase_price[s][m],
+                "lead_time": lead_time[s][m]
             })
 
-    # Inventory & shortages
     for t in periods:
         for m in materials:
             results["inventory"].append({
                 "period": t,
                 "material": m,
-                "inventory": round(inventory[(t, m)].value(), 2)
+                "inventory": round(inventory[(t, m)].value() or 0, 2)
             })
             results["shortages"].append({
                 "period": t,
                 "material": m,
-                "shortage": round(shortage[(t, m)].value(), 2)
+                "shortage": round(shortage[(t, m)].value() or 0, 2)
             })
 
-    # KPIs
-    total_cost = sum(
-        o["quantity"] * o["unit_cost"]
-        for o in results["orders"]
-    )
-
+    total_cost = sum(o["quantity"] * o["unit_cost"] for o in results["orders"])
     total_quantity = sum(o["quantity"] for o in results["orders"])
-
-    risky_periods = len({
-        s["period"] for s in results["shortages"] if s["shortage"] > 0
-    })
+    risky_periods = len({s["period"] for s in results["shortages"] if s["shortage"] > 0})
 
     results["kpis"] = {
         "total_cost": round(total_cost, 2),
         "total_quantity": round(total_quantity, 2),
-        "risky_periods": risky_periods,
-        "average_cost_per_ton": round(
-            total_cost / total_quantity, 2
-        ) if total_quantity > 0 else 0
+        "average_cost_per_ton": round(total_cost / total_quantity, 2) if total_quantity > 0 else 0,
+        "risky_periods": risky_periods
     }
 
     return results

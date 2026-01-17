@@ -29,7 +29,7 @@ def optimize_inventory_and_procurement(
     safety_stock: Dict[str, float],
     supplier_materials: Dict[str, List[str]],
     purchase_price: Dict[str, Dict[str, float]],
-    lead_time: Dict[str, int],
+    lead_time: Dict[str, Dict[str, int]],
     supplier_capacity: Dict[str, float],
     holding_cost: Dict[str, float],
     penalty_cost: float,
@@ -67,7 +67,7 @@ def optimize_inventory_and_procurement(
             arrivals = []
             for s in suppliers:
                 if m in supplier_materials[s]:
-                    lt = lead_time[s]
+                    lt = lead_time.get(s, {}).get(m, 1)
                     if i - lt >= 0:
                         arrivals.append(order[(periods[i - lt], s, m)])
             
@@ -147,25 +147,32 @@ def optimize_inventory_and_procurement(
     for t, s, m in order:
         q = order[(t, s, m)].value()
         if q and q > 0:
+            # Get lead time with fallback to 1 if not found
+            material_lead_time = lead_time.get(s, {}).get(m, 1)
+            
             results["orders"].append({
                 "period": t,
                 "supplier": s,
                 "material": m,
                 "quantity": round(q, 2),
-                "unit_cost": purchase_price[s][m]
+                "unit_cost": purchase_price[s][m],
+                "lead_time": material_lead_time
             })
     
     for t in periods:
         for m in materials:
+            inv_value = inventory[(t, m)].value()
+            short_value = shortage[(t, m)].value()
+            
             results["inventory"].append({
                 "period": t,
                 "material": m,
-                "inventory": round(inventory[(t, m)].value(), 2)
+                "inventory": round(inv_value if inv_value else 0, 2)
             })
             results["shortages"].append({
                 "period": t,
                 "material": m,
-                "shortage": round(shortage[(t, m)].value(), 2)
+                "shortage": round(short_value if short_value else 0, 2)
             })
     
     total_cost = sum(o["quantity"] * o["unit_cost"] for o in results["orders"])
@@ -181,7 +188,6 @@ def optimize_inventory_and_procurement(
     
     return results
 
-
 def run_optimization(
     periods: List[str],
     materials: List[str],
@@ -191,7 +197,7 @@ def run_optimization(
     safety_stock_months: float,
     supplier_materials: Dict[str, List[str]],
     purchase_price: Dict[str, Dict[str, float]],
-    lead_time: Dict[str, int],
+    lead_time: Dict[str, Dict[str, int]],  # Changed from Dict[str, int] to Dict[str, Dict[str, int]]
     supplier_capacity: Dict[str, float],
     holding_cost: Dict[str, float],
     penalty_cost: float,
@@ -288,32 +294,34 @@ def initialize_session_state():
             'PE': {'holding_cost': 4.50, 'inventory': 200, 'capacity': 1000, 'reference_price': 950},
             'LSF': {'holding_cost': 8.00, 'inventory': 150, 'capacity': 800, 'reference_price': 2300}
         }
-    
     if "suppliers" not in st.session_state:
         st.session_state.suppliers = {
             'Alpha Corp': {
                 'materials': ['PVC', 'XLPE'],
-                'lead_time': 1,
                 'capacity': 500,
                 'risk': 0.02,
                 'payment_adj': 0.00,
-                'prices': {'PVC': 1200, 'XLPE': 1800}
+                'prices': {'PVC': 1200, 'XLPE': 1800},
+                'lead_times': {'PVC': 1, 'XLPE': 1},
+                'origin': 'Local'  # NEW: Add default origin
             },
             'Beta Ltd': {
                 'materials': ['XLPE', 'PE', 'LSF'],
-                'lead_time': 2,
                 'capacity': 400,
                 'risk': 0.05,
                 'payment_adj': -24.00,
-                'prices': {'XLPE': 1750, 'PE': 900, 'LSF': 2200}
+                'prices': {'XLPE': 1750, 'PE': 900, 'LSF': 2200},
+                'lead_times': {'XLPE': 2, 'PE': 2, 'LSF': 1},
+                'origin': 'Imported'  # NEW: Add default origin
             },
             'Gamma Inc': {
                 'materials': ['PVC', 'PE'],
-                'lead_time': 1,
                 'capacity': 600,
                 'risk': 0.03,
                 'payment_adj': 15.00,
-                'prices': {'PVC': 1180, 'PE': 920}
+                'prices': {'PVC': 1180, 'PE': 920},
+                'lead_times': {'PVC': 1, 'PE': 2},
+                'origin': 'Local'  # NEW: Add default origin
             }
         }
     
@@ -386,7 +394,7 @@ st.markdown("""
     }
     
     .block-container {
-        padding-top: 1rem;
+        padding-top: 3.5em;
         padding-bottom: 0rem;
         max-width: 100%;
         padding-left: 2rem;
@@ -1432,7 +1440,6 @@ def render_inventory_management():
             help="Safety stock buffer against demand variability"
         )
 
-
 def render_supplier_configuration():
     """Supplier configuration page"""
     create_header(
@@ -1456,11 +1463,12 @@ def render_supplier_configuration():
                 if new_supplier not in st.session_state.suppliers:
                     st.session_state.suppliers[new_supplier] = {
                         'materials': [],
-                        'lead_time': 1,
                         'capacity': 500,
                         'risk': 0.02,
                         'payment_adj': 0.0,
-                        'prices': {}
+                        'prices': {},
+                        'lead_times': {},
+                        'origin': 'Local'  # NEW: Default origin
                     }
                     st.success(f"✅ Supplier '{new_supplier}' added!")
                     st.rerun()
@@ -1480,9 +1488,14 @@ def render_supplier_configuration():
         st.metric("📊 Total Capacity", f"{total_capacity:,.0f} tons/month")
     
     with col3:
-        avg_lead_time = sum(s['lead_time'] for s in st.session_state.suppliers.values()) / len(st.session_state.suppliers) if st.session_state.suppliers else 0
+        # Calculate average lead time across all materials
+        all_lead_times = []
+        for supp_data in st.session_state.suppliers.values():
+            if 'lead_times' in supp_data:
+                all_lead_times.extend(supp_data['lead_times'].values())
+        avg_lead_time = sum(all_lead_times) / len(all_lead_times) if all_lead_times else 0
         st.metric("⏱️ Avg Lead Time", f"{avg_lead_time:.1f} months")
-    
+        
     st.markdown("<br>", unsafe_allow_html=True)
     
     # Supplier Details
@@ -1494,46 +1507,123 @@ def render_supplier_configuration():
     
     for supp_name, supp_data in st.session_state.suppliers.items():
         with st.expander(f"🏭 {supp_name}", expanded=False):
-            col1, col2, col3, col4 = st.columns(4)
+            # Section 1: Basic Configuration
+            st.markdown("**📋 Basic Configuration**")
+            col1, col2, col3 = st.columns(3)
             
             with col1:
-                lead_time = st.number_input(
-                    "Lead Time (months)",
-                    value=int(supp_data['lead_time']),
-                    min_value=0,
-                    max_value=12,
-                    key=f"lead_{supp_name}"
-                )
-            
-            with col2:
                 capacity = st.number_input(
                     "Monthly Capacity (tons)",
                     value=int(supp_data['capacity']),
                     min_value=0,
                     step=50,
-                    key=f"cap_{supp_name}"
+                    key=f"cap_{supp_name}",
+                    help="Maximum total quantity this supplier can deliver per month across all materials"
+                )
+            
+            with col2:
+                # NEW: Supplier Origin
+                origin = st.selectbox(
+                    "Supplier Origin",
+                    options=['Local', 'Imported'],
+                    index=0 if supp_data.get('origin', 'Local') == 'Local' else 1,
+                    key=f"origin_{supp_name}",
+                    help="🌍 Origin affects lead time reliability, logistics risk, and supply flexibility. Local suppliers typically offer shorter lead times and lower logistics risk, while imported suppliers may have longer lead times but potentially competitive pricing."
                 )
             
             with col3:
+                st.markdown("<br>", unsafe_allow_html=True)
+                # Display origin badge
+                origin_badge = "🏠 Local" if origin == 'Local' else "🌐 Imported"
+                st.info(f"**Current Origin:** {origin_badge}")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Section 2: Risk & Financial Parameters
+            st.markdown("**💰 Risk & Financial Parameters**")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # ENHANCED: Risk Premium with detailed guidance
                 risk = st.number_input(
                     "Risk Premium (%)",
                     value=float(supp_data['risk'] * 100),
                     min_value=0.0,
                     max_value=100.0,
                     step=0.5,
-                    key=f"risk_{supp_name}"
+                    key=f"risk_{supp_name}",
+                    help="""
+📊 **Aggregated Risk Assessment**
+
+This value represents overall supplier risk based on multiple factors:
+- Supplier reliability and track record
+- Lead time uncertainty and variability
+- Quality performance and defect rates
+- Logistics and sourcing complexity
+
+**Risk Classification Guidelines:**
+- **Low Risk (0–5%)**: Established suppliers with proven reliability
+- **Medium Risk (10–30%)**: Suppliers with moderate uncertainty
+- **High Risk (40%+)**: New or unreliable suppliers with significant risk
+
+*Note: This premium is added to unit costs in the optimization model to reflect risk-adjusted procurement costs.*
+                    """
                 ) / 100
+                
+                # Display risk classification
+                if risk * 100 <= 5:
+                    st.success("✅ Low Risk Supplier")
+                elif risk * 100 <= 30:
+                    st.warning("⚠️ Medium Risk Supplier")
+                else:
+                    st.error("🚨 High Risk Supplier")
             
-            with col4:
+            with col2:
+                # ENHANCED: Payment Adjustment with detailed guidance
                 payment_adj = st.number_input(
                     "Payment Adjustment ($/ton)",
                     value=float(supp_data['payment_adj']),
                     step=1.0,
-                    key=f"payment_{supp_name}"
+                    key=f"payment_{supp_name}",
+                    help="""
+💳 **Payment Terms Impact**
+
+This value models the financial effect of payment policies:
+
+**Negative Values** = Supplier Discounts:
+- Early/advance payment discounts (e.g., −$25)
+- Cash payment benefits (e.g., −$15)
+
+**Positive Values** = Financing Costs:
+- Net 30 days payment terms (e.g., +$10)
+- Net 60/90 days extended terms (e.g., +$20–$30)
+- Installment plans (e.g., +$40+)
+
+**Zero** = Standard terms with no adjustment
+
+**Payment Terms Examples:**
+- Cash payment: $0
+- 2% discount for advance payment: −$25
+- Net 30 days: +$10
+- Net 60 days: +$20
+- Installment financing: +$40
+
+*Note: This adjustment is added to unit costs to reflect true total cost of procurement.*
+                    """
                 )
+                
+                # Display payment terms classification
+                if payment_adj < 0:
+                    st.success(f"💰 Discount: ${abs(payment_adj):.2f}/ton")
+                elif payment_adj > 0:
+                    st.warning(f"📈 Financing Cost: +${payment_adj:.2f}/ton")
+                else:
+                    st.info("💵 Standard Terms")
             
             st.markdown("<br>", unsafe_allow_html=True)
             
+            # Section 3: Materials & Pricing
+            st.markdown("**📦 Materials & Pricing**")
             col1, col2 = st.columns([1, 2])
             
             with col1:
@@ -1543,22 +1633,28 @@ def render_supplier_configuration():
                     options=list(st.session_state.materials.keys()),
                     default=supp_data['materials'],
                     key=f"materials_{supp_name}",
-                    label_visibility="collapsed"
+                    label_visibility="collapsed",
+                    help="Select which materials this supplier can provide"
                 )
             
             with col2:
-                st.markdown("**Material Pricing**")
+                st.markdown("**Material Pricing & Lead Times**")
                 
                 if selected_materials:
+                    # Get current lead times
+                    current_lead_times = supp_data.get('lead_times', {})
+                    
                     pricing_data = []
                     for mat in selected_materials:
                         current_price = supp_data['prices'].get(
                             mat,
                             st.session_state.materials[mat]['reference_price']
                         )
+                        current_lead = current_lead_times.get(mat, 1)
                         pricing_data.append({
                             'Material': mat,
-                            'Price ($/ton)': current_price
+                            'Price ($/ton)': current_price,
+                            'Lead Time (months)': current_lead
                         })
                     
                     pricing_df = pd.DataFrame(pricing_data)
@@ -1569,40 +1665,84 @@ def render_supplier_configuration():
                         key=f"pricing_{supp_name}",
                         column_config={
                             "Material": st.column_config.TextColumn("Material", disabled=True),
-                            "Price ($/ton)": st.column_config.NumberColumn("Price ($/ton)", min_value=0, step=10)
+                            "Price ($/ton)": st.column_config.NumberColumn(
+                                "Price ($/ton)", 
+                                min_value=0, 
+                                step=10,
+                                help="Base unit price before risk and payment adjustments"
+                            ),
+                            "Lead Time (months)": st.column_config.NumberColumn(
+                                "Lead Time (months)", 
+                                min_value=0, 
+                                max_value=12, 
+                                step=1,
+                                help="Time from order placement to delivery arrival"
+                            )
                         }
                     )
                 else:
-                    st.info("Select materials to configure pricing")
+                    st.info("Select materials to configure pricing and lead times")
                     edited_pricing = None
             
             st.markdown("<br>", unsafe_allow_html=True)
             
+            # Section 4: Actions
             col1, col2 = st.columns([1, 3])
-            
+
             with col1:
                 if st.button(f"💾 Save Configuration", key=f"save_{supp_name}", use_container_width=True):
-                    # Update prices from data editor
+                    # Update prices and lead times from data editor
                     new_prices = {}
+                    new_lead_times = {}
                     if edited_pricing is not None:
                         for _, row in edited_pricing.iterrows():
                             new_prices[row['Material']] = row['Price ($/ton)']
+                            new_lead_times[row['Material']] = int(row['Lead Time (months)'])
                     
                     st.session_state.suppliers[supp_name] = {
                         'materials': selected_materials,
-                        'lead_time': lead_time,
                         'capacity': capacity,
                         'risk': risk,
                         'payment_adj': payment_adj,
-                        'prices': new_prices
+                        'prices': new_prices,
+                        'lead_times': new_lead_times,
+                        'origin': origin  # NEW: Save origin
                     }
                     st.success(f"✅ {supp_name} configuration saved!")
-            
+
             with col2:
                 if st.button(f"🗑️ Delete Supplier", key=f"delete_{supp_name}"):
                     del st.session_state.suppliers[supp_name]
                     st.success(f"✅ {supp_name} deleted!")
                     st.rerun()
+            
+            # Section 5: Summary Display
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown("**📊 Effective Cost Summary**")
+            
+            if edited_pricing is not None and not edited_pricing.empty:
+                summary_data = []
+                for _, row in edited_pricing.iterrows():
+                    base_price = row['Price ($/ton)']
+                    risk_cost = base_price * risk
+                    total_cost = base_price + risk_cost + payment_adj
+                    
+                    summary_data.append({
+                        'Material': row['Material'],
+                        'Base Price': f"${base_price:,.2f}",
+                        'Risk Premium': f"+${risk_cost:,.2f}",
+                        'Payment Adj': f"{payment_adj:+.2f}",
+                        'Total Cost': f"${total_cost:,.2f}"
+                    })
+                
+                summary_df = pd.DataFrame(summary_data)
+                st.dataframe(
+                    summary_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                st.caption("💡 Total Cost = Base Price + Risk Premium + Payment Adjustment")
 
 
 def render_results_analysis():
@@ -2200,13 +2340,14 @@ MATERIALS CONFIGURED
             summary_text += "\n\n========================================\n"
             summary_text += "SUPPLIERS CONFIGURED\n"
             summary_text += "========================================\n"
-            
             for supp_name, supp_data in st.session_state.suppliers.items():
                 summary_text += f"\n{supp_name}:"
-                summary_text += f"\n  - Lead Time: {supp_data['lead_time']} months"
                 summary_text += f"\n  - Capacity: {supp_data['capacity']} tons/month"
                 summary_text += f"\n  - Materials: {', '.join(supp_data['materials'])}"
-            
+                if 'lead_times' in supp_data and supp_data['lead_times']:
+                    summary_text += f"\n  - Lead Times: {', '.join([f'{m}:{lt}mo' for m, lt in supp_data['lead_times'].items()])}"
+
+
             st.download_button(
                 label="📥 Download Summary Report",
                 data=summary_text,
@@ -2234,7 +2375,7 @@ with st.sidebar:
     st.markdown("""
         <div style="padding: 2rem 1.5rem; text-align: center; border-bottom: 1px solid #334155; margin-bottom: 2rem;">
             <div style="font-size: 3rem; margin-bottom: 0.5rem;">📊</div>
-            <div style="font-size: 1.75rem; font-weight: 800; color: #FFFFFF; margin-bottom: 0.25rem;">ARABCAB</div>
+            <div style="font-size: 1.75rem; font-weight: 800; color: #FFFFFF; margin-bottom: 0.25rem;">Nexum</div>
             <div style="font-size: 0.875rem; color: #94A3B8; margin-bottom: 0.5rem;">Inventory Optimization</div>
             <div style="font-size: 0.75rem; color: #64748B;">Scientific Competition 2026</div>
         </div>
@@ -2335,126 +2476,123 @@ with st.sidebar:
     
     st.markdown("<br>", unsafe_allow_html=True)
     
+st.info(
+    f"DEBUG | Alpha capacity = {st.session_state.suppliers['Alpha Corp']['capacity']} | "
+    f"PVC holding cost = {st.session_state.materials['PVC']['holding_cost']}"
+)
+
+
+
+
     # Run Optimization
-    if st.button("🚀 Run Optimization", type="primary", use_container_width=True):
-        with st.spinner("🔄 Running optimization..."):
-            try:
-                periods = generate_periods(st.session_state.planning_horizon)
-                materials = list(st.session_state.materials.keys())
-                suppliers = list(st.session_state.suppliers.keys())
-                
-                if not materials:
-                    st.error("⚠️ Please add at least one material")
-                elif not suppliers:
-                    st.error("⚠️ Please add at least one supplier")
-                elif not st.session_state.forecast_demand:
-                    st.error("⚠️ No forecast data available. Generate forecast first.")
-                else:
-                    # Validate supplier materials and pricing
-                    valid_suppliers = []
-                    for supp_name, supp_data in st.session_state.suppliers.items():
-                        if supp_data['materials'] and supp_data['prices']:
-                            valid_suppliers.append(supp_name)
-                        else:
-                            st.warning(f"⚠️ Supplier '{supp_name}' has no materials or prices configured")
-                    
-                    if not valid_suppliers:
-                        st.error("⚠️ No valid suppliers configured. Please add materials and prices to suppliers.")
+if st.button("🚀 Run Optimization", type="primary", use_container_width=True):
+    with st.spinner("🔄 Running optimization..."):
+        try:
+            periods = generate_periods(st.session_state.planning_horizon)
+            materials = list(st.session_state.materials.keys())
+            suppliers = list(st.session_state.suppliers.keys())
+            
+            if not materials:
+                st.error("⚠️ Please add at least one material")
+            elif not suppliers:
+                st.error("⚠️ Please add at least one supplier")
+            elif not st.session_state.forecast_demand:
+                st.error("⚠️ No forecast data available. Generate forecast first.")
+            else:
+                # Validate supplier materials and pricing
+                valid_suppliers = []
+                for supp_name, supp_data in st.session_state.suppliers.items():
+                    if supp_data['materials'] and supp_data['prices']:
+                        valid_suppliers.append(supp_name)
                     else:
-                        suppliers = valid_suppliers
-                        
-                        # Prepare optimization inputs
-                        initial_inventory = {
-                            m: st.session_state.materials[m]['inventory'] 
-                            for m in materials
-                        }
-                        
-                        holding_cost = {
-                            m: st.session_state.materials[m]['holding_cost'] 
-                            for m in materials
-                        }
-                        
-                        reference_price = {
-                            m: st.session_state.materials[m]['reference_price'] 
-                            for m in materials
-                        }
-                        
-                        supplier_materials = {
-                            s: st.session_state.suppliers[s]['materials'] 
-                            for s in suppliers
-                        }
-                        
-                        purchase_price = {
-                            s: st.session_state.suppliers[s]['prices'] 
-                            for s in suppliers
-                        }
-                        
-                        lead_time = {
-                            s: st.session_state.suppliers[s]['lead_time'] 
-                            for s in suppliers
-                        }
-                        
-                        supplier_capacity = {
-                            s: st.session_state.suppliers[s]['capacity'] 
-                            for s in suppliers
-                        }
-                        
-                        supplier_risk = {
-                            s: st.session_state.suppliers[s]['risk'] 
-                            for s in suppliers
-                        }
-                        
-                        payment_adjustment = {
-                            s: st.session_state.suppliers[s]['payment_adj'] 
-                            for s in suppliers
-                        }
-                        
-                        # Run optimization
-                        st.info("⏳ Solving optimization model...")
-                        results = run_optimization(
-                            periods=periods,
-                            materials=materials,
-                            suppliers=suppliers,
-                            forecast_demand=st.session_state.forecast_demand,
-                            initial_inventory=initial_inventory,
-                            safety_stock_months=st.session_state.safety_stock_months,
-                            supplier_materials=supplier_materials,
-                            purchase_price=purchase_price,
-                            lead_time=lead_time,
-                            supplier_capacity=supplier_capacity,
-                            holding_cost=holding_cost,
-                            penalty_cost=st.session_state.penalty_cost,
-                            supplier_risk=supplier_risk,
-                            payment_adjustment=payment_adjustment,
-                            budget_buffer=st.session_state.budget_buffer,
-                            reference_price=reference_price
-                        )
-                        
-                        # Store results
-                        st.session_state.optimization_results = results
-                        st.session_state.last_optimization_time = datetime.now()
-                        
-                        # Show success message
-                        st.success("✅ Optimization completed successfully!")
-                        st.balloons()
-                        
-                        # Navigate to dashboard to see results
-                        st.session_state.page = "dashboard"
-                        st.rerun()
-            
-            except Exception as e:
-                st.error(f"❌ Optimization failed: {str(e)}")
-                with st.expander("🔍 Error Details"):
-                    import traceback
-                    st.code(traceback.format_exc())
-            
-            except Exception as e:
-                st.error(f"❌ Optimization failed: {str(e)}")
-                with st.expander("🔍 Error Details"):
-                    import traceback
-                    st.code(traceback.format_exc())
-    
-    # Quick Stats
+                        st.warning(f"⚠️ Supplier '{supp_name}' has no materials or prices configured")
+                
+                if not valid_suppliers:
+                    st.error("⚠️ No valid suppliers configured. Please add materials and prices to suppliers.")
+                else:
+                    suppliers = valid_suppliers
+                    
+                    # Prepare optimization inputs
+                    initial_inventory = {m: st.session_state.materials[m]['inventory'] for m in materials}
+                    holding_cost = {m: st.session_state.materials[m]['holding_cost'] for m in materials}
+                    reference_price = {m: st.session_state.materials[m]['reference_price'] for m in materials}
+                    supplier_materials = {s: st.session_state.suppliers[s]['materials'] for s in suppliers}
+                    
+                    # Validate and build purchase prices
+                    purchase_price = {}
+                    for s in suppliers:
+                        supp_prices = st.session_state.suppliers[s].get('prices', {})
+                        if not supp_prices:
+                            st.error(f"❌ Supplier '{s}' has no prices configured!")
+                            st.stop()
+                        purchase_price[s] = supp_prices
+                    
+                    # Validate and build lead times with defaults
+                    lead_time = {}
+                    for s in suppliers:
+                        lead_time[s] = {}
+                        supp_lead_times = st.session_state.suppliers[s].get('lead_times', {})
+                        for m in st.session_state.suppliers[s]['materials']:
+                            if m not in supp_lead_times:
+                                st.warning(f"⚠️ Supplier '{s}' missing lead time for '{m}', using default 1 month")
+                                lead_time[s][m] = 1
+                            else:
+                                lead_time[s][m] = supp_lead_times[m]
+                    
+                    supplier_capacity = {s: st.session_state.suppliers[s]['capacity'] for s in suppliers}
+                    supplier_risk = {s: st.session_state.suppliers[s]['risk'] for s in suppliers}
+                    payment_adjustment = {s: st.session_state.suppliers[s]['payment_adj'] for s in suppliers}
+
+                    
+                    # DEBUG: Print what we're sending to optimization
+                    st.warning("🔍 DEBUG: Inputs being sent to optimization")
+                    st.json({
+                        "supplier_capacity": supplier_capacity,
+                        "holding_cost": holding_cost,
+                        "lead_time": lead_time,
+                        "purchase_price": purchase_price
+                    })
+
+                    # Run optimization
+                    st.info("⏳ Solving optimization model...")
+                    results = run_optimization(
+                        periods=periods,
+                        materials=materials,
+                        suppliers=suppliers,
+                        forecast_demand=st.session_state.forecast_demand,
+                        initial_inventory=initial_inventory,
+                        safety_stock_months=st.session_state.safety_stock_months,
+                        supplier_materials=supplier_materials,
+                        purchase_price=purchase_price,
+                        lead_time=lead_time,
+                        supplier_capacity=supplier_capacity,
+                        holding_cost=holding_cost,
+                        penalty_cost=st.session_state.penalty_cost,
+                        supplier_risk=supplier_risk,
+                        payment_adjustment=payment_adjustment,
+                        budget_buffer=st.session_state.budget_buffer,
+                        reference_price=reference_price
+                    )
+                    
+                    # Store results
+                    st.session_state.optimization_results = results
+                    st.session_state.last_optimization_time = datetime.now()
+                    
+                    # Show success message
+                    st.success("✅ Optimization completed successfully!")
+                    st.balloons()
+                    
+                    # Navigate to dashboard to see results
+                    st.session_state.page = "dashboard"
+                    st.rerun()
+        
+        except Exception as e:
+            st.error(f"❌ Optimization failed: {str(e)}")
+            with st.expander("🔍 Error Details"):
+                import traceback
+                st.code(traceback.format_exc())
+
+# Quick Stats
     if st.session_state.optimization_results:
         st.divider()
         st.markdown("### 📊 Quick Stats")
@@ -2486,13 +2624,34 @@ with st.sidebar:
     
     st.divider()
     
-    # System Info
-    st.markdown("### ℹ️ System Info")
-    
-    st.caption(f"**Materials:** {len(st.session_state.materials)}")
-    st.caption(f"**Suppliers:** {len(st.session_state.suppliers)}")
-    st.caption(f"**Horizon:** {st.session_state.planning_horizon} months")
-    st.caption(f"**Forecast:** {st.session_state.forecast_source}")
+st.markdown("### ℹ️ System Info")
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(
+        label="📦 Materials",
+        value=len(st.session_state.materials)
+    )
+
+with col2:
+    st.metric(
+        label="🏭 Suppliers",
+        value=len(st.session_state.suppliers)
+    )
+
+with col3:
+    st.metric(
+        label="🗓️ Horizon",
+        value=f"{st.session_state.planning_horizon} months"
+    )
+
+with col4:
+    st.metric(
+        label="📈 Forecast",
+        value=st.session_state.forecast_source
+    )
+
 
 
 # ============================================================================

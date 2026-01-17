@@ -1,7 +1,6 @@
 from typing import Dict, List
-from src.optimization.milp.model import (
-    optimize_inventory_and_procurement
-)
+from src.optimization.milp.model import optimize_inventory_and_procurement
+
 
 def run_optimization(
     periods: List[str],
@@ -15,7 +14,7 @@ def run_optimization(
 
     supplier_materials: Dict[str, List[str]],
     purchase_price: Dict[str, Dict[str, float]],
-    lead_time: Dict[str, int],
+    lead_time: Dict[str, Dict[str, int]],
     supplier_capacity: Dict[str, float],
 
     holding_cost: Dict[str, float],
@@ -33,13 +32,19 @@ def run_optimization(
         raise ValueError("Planning periods cannot be empty")
 
     # -------------------------------------------------
+    # VALIDATE FORECAST
+    # -------------------------------------------------
+    for t in periods:
+        for m in materials:
+            if m not in forecast_demand.get(t, {}):
+                raise ValueError(f"Missing forecast for material '{m}' in period '{t}'")
+
+    # -------------------------------------------------
     # SAFETY STOCK
     # -------------------------------------------------
     safety_stock = {}
     for m in materials:
-        avg_demand = sum(
-            forecast_demand[t][m] for t in periods
-        ) / len(periods)
+        avg_demand = sum(forecast_demand[t][m] for t in periods) / len(periods)
         safety_stock[m] = safety_stock_months * avg_demand
 
     # -------------------------------------------------
@@ -74,6 +79,9 @@ def run_optimization(
         payment_adjustment=payment_adjustment,
         monthly_budget=monthly_budget
     )
+
+    if results["status"] != "Optimal":
+        raise RuntimeError(f"Optimization failed: {results['status']}")
 
     results["meta"] = {
         "planning_horizon": len(periods),
