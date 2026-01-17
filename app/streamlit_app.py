@@ -1522,13 +1522,13 @@ def render_supplier_configuration():
                 )
             
             with col2:
-                # NEW: Supplier Origin
-                origin = st.selectbox(
+                origin = st.radio(
                     "Supplier Origin",
                     options=['Local', 'Imported'],
                     index=0 if supp_data.get('origin', 'Local') == 'Local' else 1,
                     key=f"origin_{supp_name}",
-                    help="🌍 Origin affects lead time reliability, logistics risk, and supply flexibility. Local suppliers typically offer shorter lead times and lower logistics risk, while imported suppliers may have longer lead times but potentially competitive pricing."
+                    help="🌍 Origin affects lead time reliability, logistics risk, and supply flexibility",
+                    horizontal=True  # Makes it display side-by-side
                 )
             
             with col3:
@@ -1754,9 +1754,6 @@ def render_results_analysis():
     
     if st.session_state.optimization_results is None:
         st.warning("⚠️ No optimization results available. Please run optimization first.")
-        if st.button("🚀 Run Optimization Now", type="primary"):
-            st.session_state.page = "dashboard"
-            st.rerun()
         return
     
     results = st.session_state.optimization_results
@@ -2372,17 +2369,50 @@ MATERIALS CONFIGURED
 # ============================================================================
 
 with st.sidebar:
-    st.markdown("""
-        <div style="padding: 2rem 1.5rem; text-align: center; border-bottom: 1px solid #334155; margin-bottom: 2rem;">
-            <div style="font-size: 3rem; margin-bottom: 0.5rem;">📊</div>
-            <div style="font-size: 1.75rem; font-weight: 800; color: #FFFFFF; margin-bottom: 0.25rem;">Nexum</div>
-            <div style="font-size: 0.875rem; color: #94A3B8; margin-bottom: 0.5rem;">Inventory Optimization</div>
-            <div style="font-size: 0.75rem; color: #64748B;">Scientific Competition 2026</div>
+   with st.sidebar:
+
+
+    with st.sidebar:
+
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            padding: 1.75rem 1.25rem;
+            border-radius: 14px;
+            border: 1px solid #334155;
+            text-align: center;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+        ">
+            <div style="
+                font-size: 1.75rem;
+                font-weight: 800;
+                color: #FFFFFF;
+                letter-spacing: -0.02em;
+                margin-bottom: 0.25rem;
+            ">
+                Nexum
+            </div>
+            <div style="
+                font-size: 0.85rem;
+                color: #94A3B8;
+                margin-bottom: 0.25rem;
+            ">
+                Inventory Optimization
+            </div>
+            <div style="
+                font-size: 0.7rem;
+                color: #64748B;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            ">
+                Scientific Competition 2026
+            </div>
         </div>
-    """, unsafe_allow_html=True)
-    
-    # Navigation
-    st.markdown("### 🧭 Navigation")
+        """, unsafe_allow_html=True)
+
+        st.markdown("<hr style='border:1px solid #334155;'>", unsafe_allow_html=True)
+
     
     pages = {
         "dashboard": ("🏠", "Dashboard"),
@@ -2412,7 +2442,7 @@ with st.sidebar:
     # Optimization Controls
     st.markdown("### ⚙️ Optimization Controls")
     
-    with st.expander("📅 Planning Horizon", expanded=True):
+    with st.expander("📅 Planning Horizon", expanded=False):
         planning_horizon = st.number_input(
             "Months to plan ahead",
             min_value=3,
@@ -2431,7 +2461,7 @@ with st.sidebar:
                 st.session_state.forecast_demand = generate_ai_forecast(periods, materials)
             st.success(f"✅ Updated to {planning_horizon} months")
     
-    with st.expander("💰 Budget Settings", expanded=True):
+    with st.expander("💰 Budget Settings", expanded=False):
         budget_buffer = st.slider(
             "Budget buffer (%)",
             min_value=0,
@@ -2446,7 +2476,7 @@ with st.sidebar:
             st.session_state.budget_buffer = budget_buffer / 100
             st.success(f"✅ Buffer set to {budget_buffer}%")
     
-    with st.expander("⚠️ Risk Parameters", expanded=True):
+    with st.expander("⚠️ Risk Parameters", expanded=False):
         penalty_cost = st.number_input(
             "Shortage penalty ($/ton)",
             min_value=0.0,
@@ -2475,14 +2505,6 @@ with st.sidebar:
             st.success(f"✅ Safety stock: {safety_months}mo")
     
     st.markdown("<br>", unsafe_allow_html=True)
-    
-st.info(
-    f"DEBUG | Alpha capacity = {st.session_state.suppliers['Alpha Corp']['capacity']} | "
-    f"PVC holding cost = {st.session_state.materials['PVC']['holding_cost']}"
-)
-
-
-
 
     # Run Optimization
 if st.button("🚀 Run Optimization", type="primary", use_container_width=True):
@@ -2542,16 +2564,6 @@ if st.button("🚀 Run Optimization", type="primary", use_container_width=True):
                     supplier_capacity = {s: st.session_state.suppliers[s]['capacity'] for s in suppliers}
                     supplier_risk = {s: st.session_state.suppliers[s]['risk'] for s in suppliers}
                     payment_adjustment = {s: st.session_state.suppliers[s]['payment_adj'] for s in suppliers}
-
-                    
-                    # DEBUG: Print what we're sending to optimization
-                    st.warning("🔍 DEBUG: Inputs being sent to optimization")
-                    st.json({
-                        "supplier_capacity": supplier_capacity,
-                        "holding_cost": holding_cost,
-                        "lead_time": lead_time,
-                        "purchase_price": purchase_price
-                    })
 
                     # Run optimization
                     st.info("⏳ Solving optimization model...")
