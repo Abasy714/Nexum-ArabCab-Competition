@@ -1446,7 +1446,134 @@ def render_supplier_configuration():
         "Supplier Configuration",
         "Manage Supplier Network, Pricing & Capabilities"
     )
+    with st.expander("📘 Supplier Configuration Guidelines", expanded=False):
+        st.markdown("""
+        <div style="
+            background: rgba(15, 23, 42, 0.6);
+            padding: 1.25rem;
+            border-radius: 10px;
+            border-left: 3px solid #3B82F6;
+        ">
+
+        ### General Principle
+        
+        Supplier parameters represent **expected future behavior**, not perfect certainty.  
+        The optimizer balances **cost, risk, lead time, and capacity** to generate robust procurement plans.
+        
+        ---
+        
+        ### Monthly Capacity (tons)
+        
+        Maximum quantity the supplier can deliver per month across all materials.
+        
+        **Typical cases:**
+        - Small / specialized supplier: **50 – 200 tons**
+        - Medium supplier: **200 – 600 tons**
+        - Large industrial supplier: **600 – 1500+ tons**
+        
+        *Tip:* Use conservative values if capacity is uncertain.
+        
+        ---
+        
+        ### Supplier Origin (Local / Imported)
+        
+        Indicates logistical exposure and delivery uncertainty.
+        
+        **Local supplier**
+        - Lead time: **0 – 1 month**
+        - Lower disruption risk
+        - Faster response to demand changes
+        
+        **Imported supplier**
+        - Lead time: **2 – 4 months**
+        - Customs, shipping, and currency risk
+        - Higher exposure to delays
+        
+        ---
+        
+        ### Risk Premium (USD/ton)
+        
+        Represents expected additional cost due to:
+        - Delivery delays
+        - Quality issues
+        - Logistics or geopolitical uncertainty
+        
+        This value is **added to unit price** in optimization.
+        
+        **Common cases:**
+        - Very reliable supplier: **5 – 15 USD/ton**
+        - Average reliability: **20 – 35 USD/ton**
+        - High-risk supplier: **40 – 70 USD/ton**
+        
+        **Special case – New supplier (no historical data):**
+        - Use **medium-to-high risk** (30 – 50 USD/ton)
+        - Reduce later as performance data becomes available
+        
+        ---
+        
+        ### Payment Adjustment (USD/ton)
+        
+        Models the financial effect of payment terms.
+        
+        - **Negative value** → cost reduction (discounts)
+        - **Positive value** → cost increase (financing, installments)
+        
+        **Typical cases:**
+        - Advance payment discount: **-10 to -30 USD/ton**
+        - Cash on delivery: **0 USD/ton**
+        - Net 30 / Net 60 / Installments: **+10 to +30 USD/ton**
+        
+        *Note:* Payment adjustment affects cost only, not delivery timing.
+        
+        ---
+        
+        ### Materials & Pricing
+        
+        Suppliers can only deliver **explicitly assigned materials**.
+        
+        **Guidelines:**
+        - Assign only materials the supplier is contractually capable of supplying
+        - Prices should represent **base price before risk & payment effects**
+        
+        ---
+        
+        ### Lead Time (months)
+        
+        Time between placing an order and receiving material.
+        
+        **Typical values:**
+        - Local supplier: **0 – 1 month**
+        - Regional importer: **1 – 2 months**
+        - Overseas importer: **2 – 4 months**
+        
+        **Worst-case planning:**  
+        If lead time varies, use the **upper bound**.
+        
+        ---
+        
+        ### How the Optimizer Interprets These Inputs
+        
+        - Lower **effective cost** → higher selection priority
+        - Higher **risk premium** → reduced reliance unless necessary
+        - Longer **lead time** → earlier ordering required
+        - Capacity limits are **hard constraints**
+        
+        ---
+        
+        **Final Tip:**  
+        When uncertain, prefer **conservative assumptions**.  
+        The optimizer performs best when inputs reflect realistic operational constraints.
+        
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Add New Supplier
+    col1, col2 = st.columns([4, 1])
+
     
+
     # Add New Supplier
     col1, col2 = st.columns([4, 1])
     
