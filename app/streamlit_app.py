@@ -27,6 +27,101 @@ def load_css():
 
 load_css()
 
+# ============================================================================
+# PERSISTENT STORAGE
+# ============================================================================
+
+def save_state_to_storage():
+    """Save current session state to persistent storage"""
+    try:
+        storage_data = {
+            'materials': st.session_state.materials,
+            'suppliers': st.session_state.suppliers,
+            'safety_stock_months': st.session_state.safety_stock_months,
+            'penalty_cost': st.session_state.penalty_cost,
+            'budget_buffer': st.session_state.budget_buffer,
+            'planning_horizon': st.session_state.planning_horizon,
+            'forecast_demand': st.session_state.forecast_demand,
+            'forecast_source': st.session_state.forecast_source,
+            'optimization_results': st.session_state.optimization_results,
+            'last_optimization_time': st.session_state.last_optimization_time.isoformat() if st.session_state.last_optimization_time else None
+        }
+        
+        # Save to browser localStorage (you'll need to implement this via JavaScript)
+        import json
+        json_data = json.dumps(storage_data)
+        
+        # For now, offer download option
+        return json_data
+    except Exception as e:
+        st.error(f"Failed to save state: {e}")
+        return None
+
+def load_state_from_storage(json_data):
+    """Load session state from persistent storage"""
+    try:
+        import json
+        data = json.loads(json_data)
+        
+        st.session_state.materials = data.get('materials', {})
+        st.session_state.suppliers = data.get('suppliers', {})
+        st.session_state.safety_stock_months = data.get('safety_stock_months', 2.0)
+        st.session_state.penalty_cost = data.get('penalty_cost', 100.0)
+        st.session_state.budget_buffer = data.get('budget_buffer', 0.10)
+        st.session_state.planning_horizon = data.get('planning_horizon', 6)
+        st.session_state.forecast_demand = data.get('forecast_demand', {})
+        st.session_state.forecast_source = data.get('forecast_source', 'AI Model')
+        st.session_state.optimization_results = data.get('optimization_results', None)
+        
+        last_opt = data.get('last_optimization_time')
+        if last_opt:
+            from datetime import datetime
+            st.session_state.last_optimization_time = datetime.fromisoformat(last_opt)
+        
+        return True
+    except Exception as e:
+        st.error(f"Failed to load state: {e}")
+        return False
+  
+def auto_save_state():
+    """Auto-save state to a local JSON file"""
+    import json
+    from pathlib import Path
+    
+    save_path = Path("app_state.json")
+    
+    storage_data = {
+        'materials': st.session_state.materials,
+        'suppliers': st.session_state.suppliers,
+        'safety_stock_months': st.session_state.safety_stock_months,
+        'penalty_cost': st.session_state.penalty_cost,
+        'budget_buffer': st.session_state.budget_buffer,
+        'planning_horizon': st.session_state.planning_horizon,
+    }
+    
+    with open(save_path, 'w') as f:
+        json.dump(storage_data, f, indent=2)
+
+def auto_load_state():
+    """Auto-load state from local JSON file if it exists"""
+    from pathlib import Path
+    import json
+    
+    save_path = Path("app_state.json")
+    
+    if save_path.exists():
+        try:
+            with open(save_path, 'r') as f:
+                data = json.load(f)
+            
+            for key, value in data.items():
+                if key in st.session_state:
+                    st.session_state[key] = value
+            
+            return True
+        except:
+            return False
+    return False
 
 # ============================================================================
 # OPTIMIZATION ENGINE (from document 3)
@@ -2067,57 +2162,52 @@ MATERIALS CONFIGURED
             st.session_state.page = "dashboard"
             st.rerun()
 
-
 # ============================================================================
 # SIDEBAR
 # ============================================================================
 
 with st.sidebar:
-   with st.sidebar:
-
-
-    with st.sidebar:
-
-        st.markdown("""
+    # Header/Branding
+    st.markdown("""
+    <div style="
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        padding: 1.75rem 1.25rem;
+        border-radius: 14px;
+        border: 1px solid #334155;
+        text-align: center;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    ">
         <div style="
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            padding: 1.75rem 1.25rem;
-            border-radius: 14px;
-            border: 1px solid #334155;
-            text-align: center;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+            font-size: 1.75rem;
+            font-weight: 800;
+            color: #FFFFFF;
+            letter-spacing: -0.02em;
+            margin-bottom: 0.25rem;
         ">
-            <div style="
-                font-size: 1.75rem;
-                font-weight: 800;
-                color: #FFFFFF;
-                letter-spacing: -0.02em;
-                margin-bottom: 0.25rem;
-            ">
-                Nexum
-            </div>
-            <div style="
-                font-size: 0.85rem;
-                color: #94A3B8;
-                margin-bottom: 0.25rem;
-            ">
-                Inventory Optimization
-            </div>
-            <div style="
-                font-size: 0.7rem;
-                color: #64748B;
-                letter-spacing: 0.08em;
-                text-transform: uppercase;
-            ">
-                Scientific Competition 2026
-            </div>
+            Nexum
         </div>
-        """, unsafe_allow_html=True)
+        <div style="
+            font-size: 0.85rem;
+            color: #94A3B8;
+            margin-bottom: 0.25rem;
+        ">
+            Inventory Optimization
+        </div>
+        <div style="
+            font-size: 0.7rem;
+            color: #64748B;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        ">
+            Scientific Competition 2026
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-        st.markdown("<hr style='border:1px solid #334155;'>", unsafe_allow_html=True)
+    st.markdown("<hr style='border:1px solid #334155;'>", unsafe_allow_html=True)
 
-    
+    # Navigation
     pages = {
         "dashboard": ("🏠", "Dashboard"),
         "forecast": ("📊", "Forecasting"),
@@ -2142,8 +2232,85 @@ with st.sidebar:
     
     st.markdown("<br>", unsafe_allow_html=True)
     st.divider()
+
+    # ========================================================================
+    # SAVE/LOAD CONFIGURATION (FIXED VERSION)
+    # ========================================================================
     
-    # Optimization Controls
+    st.markdown("### 💾 Configuration")
+
+    # Save Section
+    with st.expander("📥 Save Configuration", expanded=False):
+        st.markdown("""
+            <div style='color: #94A3B8; font-size: 0.85rem; margin-bottom: 1rem;'>
+                Download your current setup to restore later
+            </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("Generate Save File", use_container_width=True, type="primary", key="btn_generate_save"):
+            json_data = save_state_to_storage()
+            if json_data:
+                st.download_button(
+                    label="💾 Download Configuration",
+                    data=json_data,
+                    file_name=f"nexum_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                    key="btn_download_config"
+                )
+                st.success("✅ Configuration ready to download!")
+
+    # Load Section (FIXED)
+    with st.expander("📤 Load Configuration", expanded=False):
+        st.markdown("""
+            <div style='color: #94A3B8; font-size: 0.85rem; margin-bottom: 1rem;'>
+                Restore a previously saved configuration
+            </div>
+        """, unsafe_allow_html=True)
+        
+        uploaded_config = st.file_uploader(
+            "Choose configuration file",
+            type=['json'],
+            help="Upload .json configuration file",
+            key="config_uploader_sidebar"
+        )
+        
+        if uploaded_config:
+            # Show file info
+            st.info(f"📄 {uploaded_config.name} ({uploaded_config.size:,} bytes)")
+            
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                if st.button("🚀 Load", use_container_width=True, type="primary", key="btn_load_config"):
+                    with st.spinner("⏳ Loading..."):
+                        try:
+                            json_data = uploaded_config.read().decode('utf-8')
+                            if load_state_from_storage(json_data):
+                                st.success("✅ Loaded!")
+                                st.balloons()
+                                
+                                # CRITICAL: Clear uploader state before rerun
+                                if 'config_uploader_sidebar' in st.session_state:
+                                    del st.session_state['config_uploader_sidebar']
+                                
+                                time.sleep(0.3)
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
+            
+            with col2:
+                if st.button("✕", use_container_width=True, help="Clear", key="btn_clear_upload"):
+                    if 'config_uploader_sidebar' in st.session_state:
+                        del st.session_state['config_uploader_sidebar']
+                    st.rerun()
+
+    st.divider()
+
+    # ========================================================================
+    # OPTIMIZATION CONTROLS
+    # ========================================================================
+    
     st.markdown("### ⚙️ Optimization Controls")
     
     with st.expander("📅 Planning Horizon", expanded=False):
@@ -2209,7 +2376,7 @@ with st.sidebar:
             st.success(f"✅ Safety stock: {safety_months}mo")
     
     st.markdown("<br>", unsafe_allow_html=True)
-
+    
     # Run Optimization
 if st.button("🚀 Run Optimization", type="primary", use_container_width=True):
     with st.spinner("🔄 Running optimization..."):
