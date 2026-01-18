@@ -124,7 +124,7 @@ def auto_load_state():
     return False
 
 # ============================================================================
-# OPTIMIZATION ENGINE (from document 3)
+# OPTIMIZATION ENGINE 
 # ============================================================================
 
 def optimize_inventory_and_procurement(
