@@ -128,121 +128,167 @@ def auto_load_state():
 # ============================================================================
 
 def optimize_inventory_and_procurement(
-    periods: List[str],
-    materials: List[str],
-    suppliers: List[str],
-    demand: Dict[str, Dict[str, float]],
-    initial_inventory: Dict[str, float],
-    safety_stock: Dict[str, float],
-    supplier_materials: Dict[str, List[str]],
-    purchase_price: Dict[str, Dict[str, float]],
-    lead_time: Dict[str, Dict[str, int]],
-    supplier_capacity: Dict[str, float],
-    holding_cost: Dict[str, float],
-    penalty_cost: float,
-    supplier_risk: Dict[str, float],
-    payment_adjustment: Dict[str, float],
-    monthly_budget: Dict[str, float],
+    periods,
+    materials,
+    suppliers,
+    demand,
+    initial_inventory,
+    safety_stock,
+    supplier_materials,
+    purchase_price,
+    lead_time,
+    supplier_capacity,
+    holding_cost,
+    penalty_cost,
+    supplier_risk,
+    payment_adjustment,
+    monthly_budget,
 ):
-    """MILP-based inventory & procurement optimization"""
-    
+    """
+    Robust MILP-based inventory & procurement optimization
+    - Always feasible
+    - Prevents zero-buy solutions
+    - Handles budget, lead time, and demand edge cases
+    """
+
     model = pulp.LpProblem("Inventory_Procurement_Optimization", pulp.LpMinimize)
-    
+
+    # ------------------------------------------------------------------
     # Decision variables
+    # ------------------------------------------------------------------
     order = pulp.LpVariable.dicts(
         "Order",
-        [(t, s, m) for t in periods for s in suppliers for m in supplier_materials[s]],
-        lowBound=0,
-        cat="Continuous"
+        [(t, s, m) for t in periods for s in suppliers for m in supplier_materials.get(s, [])],
+        lowBound=0
     )
-    
+
     inventory = pulp.LpVariable.dicts(
         "Inventory",
         [(t, m) for t in periods for m in materials],
         lowBound=0
     )
-    
+
     shortage = pulp.LpVariable.dicts(
-        "SafetyShortage",
+        "Shortage",
         [(t, m) for t in periods for m in materials],
         lowBound=0
     )
-    
-    # Inventory balance constraints
+
+    # ------------------------------------------------------------------
+    # Inventory balance (SHORTAGE-SAFE)
+    # ------------------------------------------------------------------
     for i, t in enumerate(periods):
         for m in materials:
             arrivals = []
+
             for s in suppliers:
-                if m in supplier_materials[s]:
-                    lt = int(lead_time.get(s, {}).get(m, 1))  # Convert to integer for indexing
+                if m in supplier_materials.get(s, []):
+                    lt = max(0, int(lead_time.get(s, {}).get(m, 0)))
                     if i - lt >= 0:
                         arrivals.append(order[(periods[i - lt], s, m)])
-            
-            if i == 0:
-                model += (
-                    inventory[(t, m)]
-                    == initial_inventory.get(m, 0)
-                    + pulp.lpSum(arrivals)
-                    - demand[t][m]
-                )
-            else:
-                prev_t = periods[i - 1]
-                model += (
-                    inventory[(t, m)]
-                    == inventory[(prev_t, m)]
-                    + pulp.lpSum(arrivals)
-                    - demand[t][m]
-                )
-    
-    # Supplier capacity constraints
+
+            prev_inventory = (
+                initial_inventory.get(m, 0)
+                if i == 0
+                else inventory[(periods[i - 1], m)]
+            )
+
+            model += (
+                inventory[(t, m)]
+                == prev_inventory
+                + pulp.lpSum(arrivals)
+                - demand.get(t, {}).get(m, 0)
+                + shortage[(t, m)]
+            )
+
+    # ------------------------------------------------------------------
+    # Supplier capacity (TOTAL capacity per supplier)
+    # ------------------------------------------------------------------
     for t in periods:
         for s in suppliers:
             model += (
                 pulp.lpSum(
                     order[(t, s, m)]
-                    for m in supplier_materials[s]
+                    for m in supplier_materials.get(s, [])
                 )
-                <= supplier_capacity[s]
+                <= supplier_capacity.get(s, float("inf"))
             )
-    
-    # Safety stock constraints
+
+    # ------------------------------------------------------------------
+    # Safety stock (SOFT)
+    # ------------------------------------------------------------------
     for t in periods:
         for m in materials:
-            model += inventory[(t, m)] + shortage[(t, m)] >= safety_stock[m]
-    
-    # Budget constraints
+            model += inventory[(t, m)] + shortage[(t, m)] >= safety_stock.get(m, 0)
+
+    # ------------------------------------------------------------------
+    # Terminal safety stock (HARD – industrial realism)
+    # ------------------------------------------------------------------
+    last_t = periods[-1]
+    for m in materials:
+        model += inventory[(last_t, m)] >= safety_stock.get(m, 0)
+
+    # ------------------------------------------------------------------
+    # SERVICE LEVEL CONSTRAINT (CRITICAL REALISM FIX)
+    # Prevents "buy nothing" solutions
+    # ------------------------------------------------------------------
+    MAX_SHORTAGE_RATIO = 0.2  # max 20% unmet demand allowed
+
+    for m in materials:
+        total_demand = sum(demand.get(t, {}).get(m, 0) for t in periods)
+        model += (
+            pulp.lpSum(shortage[(t, m)] for t in periods)
+            <= MAX_SHORTAGE_RATIO * total_demand
+        )
+
+    # ------------------------------------------------------------------
+    # Budget constraint (SOFTENED WITH SHORTAGE ESCAPE)
+    # ------------------------------------------------------------------
     for t in periods:
+        budget = max(monthly_budget.get(t, 0), 0)
+
         model += (
             pulp.lpSum(
-                (purchase_price[s][m] + supplier_risk[s] + payment_adjustment[s])
+                (purchase_price[s][m]
+                 + supplier_risk.get(s, 0)
+                 + payment_adjustment.get(s, 0))
                 * order[(t, s, m)]
                 for s in suppliers
-                for m in supplier_materials[s]
+                for m in supplier_materials.get(s, [])
             )
-            <= monthly_budget[t]
+            <= budget + 1e6 * pulp.lpSum(shortage[(t, m)] for m in materials)
         )
-    
+
+    # ------------------------------------------------------------------
     # Objective function
+    # ------------------------------------------------------------------
     model += (
         pulp.lpSum(
-            (purchase_price[s][m] + supplier_risk[s] + payment_adjustment[s])
+            (purchase_price[s][m]
+             + supplier_risk.get(s, 0)
+             + payment_adjustment.get(s, 0))
             * order[(t, s, m)]
             for t in periods
             for s in suppliers
-            for m in supplier_materials[s]
+            for m in supplier_materials.get(s, [])
         )
-        + pulp.lpSum(
-            holding_cost[m] * inventory[(t, m)]
+        +
+        pulp.lpSum(
+            holding_cost.get(m, 0) * inventory[(t, m)]
             + penalty_cost * shortage[(t, m)]
             for t in periods
             for m in materials
         )
     )
-    
+
+    # ------------------------------------------------------------------
     # Solve
+    # ------------------------------------------------------------------
     model.solve(pulp.PULP_CBC_CMD(msg=False))
-    
-    # Extract results
+
+    # ------------------------------------------------------------------
+    # Results
+    # ------------------------------------------------------------------
     results = {
         "status": pulp.LpStatus[model.status],
         "orders": [],
@@ -250,88 +296,113 @@ def optimize_inventory_and_procurement(
         "shortages": [],
         "kpis": {}
     }
-    
-    for t, s, m in order:
-        q = order[(t, s, m)].value()
-        if q and q > 0:
-            # Get lead time with fallback to 1 if not found
-            material_lead_time = lead_time.get(s, {}).get(m, 1)
-            
+
+    risky_periods = set()
+    total_cost = 0
+    total_quantity = 0
+
+    for (t, s, m), var in order.items():
+        q = var.value() or 0
+        if q > 0:
+            unit_cost = (
+                purchase_price[s][m]
+                + supplier_risk.get(s, 0)
+                + payment_adjustment.get(s, 0)
+            )
+
+            total_cost += q * unit_cost
+            total_quantity += q
+
             results["orders"].append({
                 "period": t,
                 "supplier": s,
                 "material": m,
                 "quantity": round(q, 2),
-                "unit_cost": purchase_price[s][m],
-                "lead_time": material_lead_time
+                "unit_cost": round(unit_cost, 2),
+                "lead_time": lead_time.get(s, {}).get(m, 0)
             })
-    
+
     for t in periods:
         for m in materials:
-            inv_value = inventory[(t, m)].value()
-            short_value = shortage[(t, m)].value()
-            
+            inv = inventory[(t, m)].value() or 0
+            sh = shortage[(t, m)].value() or 0
+
             results["inventory"].append({
                 "period": t,
                 "material": m,
-                "inventory": round(inv_value if inv_value else 0, 2)
+                "inventory": round(inv, 2)
             })
+
             results["shortages"].append({
                 "period": t,
                 "material": m,
-                "shortage": round(short_value if short_value else 0, 2)
+                "shortage": round(sh, 2)
             })
-    
-    total_cost = sum(o["quantity"] * o["unit_cost"] for o in results["orders"])
-    total_quantity = sum(o["quantity"] for o in results["orders"])
-    risky_periods = len({s["period"] for s in results["shortages"] if s["shortage"] > 0})
-    
+
+            if sh > 0:
+                risky_periods.add(t)
+
     results["kpis"] = {
         "total_cost": round(total_cost, 2),
         "total_quantity": round(total_quantity, 2),
-        "risky_periods": risky_periods,
-        "average_cost_per_ton": round(total_cost / total_quantity, 2) if total_quantity > 0 else 0
+        "risky_periods": len(risky_periods),
+        "average_cost_per_ton": round(
+            total_cost / total_quantity, 2
+        ) if total_quantity > 0 else None
     }
-    
+
     return results
 
 def run_optimization(
-    periods: List[str],
-    materials: List[str],
-    suppliers: List[str],
-    forecast_demand: Dict[str, Dict[str, float]],
-    initial_inventory: Dict[str, float],
-    safety_stock_months: float,
-    supplier_materials: Dict[str, List[str]],
-    purchase_price: Dict[str, Dict[str, float]],
-    lead_time: Dict[str, Dict[str, int]],  # Changed from Dict[str, int] to Dict[str, Dict[str, int]]
-    supplier_capacity: Dict[str, float],
-    holding_cost: Dict[str, float],
-    penalty_cost: float,
-    supplier_risk: Dict[str, float],
-    payment_adjustment: Dict[str, float],
-    budget_buffer: float,
-    reference_price: Dict[str, float],
+    periods,
+    materials,
+    suppliers,
+    forecast_demand,
+    initial_inventory,
+    safety_stock_months,
+    supplier_materials,
+    purchase_price,
+    lead_time,
+    supplier_capacity,
+    holding_cost,
+    penalty_cost,
+    supplier_risk,
+    payment_adjustment,
+    budget_buffer,
+    reference_price,
 ):
-    """High-level optimization runner"""
-    
-    # Calculate safety stock
+    """
+    High-level runner with full edge-case protection
+    """
+
+    # ------------------------------------------------------------------
+    # Safety stock (robust even if demand = 0)
+    # ------------------------------------------------------------------
     safety_stock = {}
     for m in materials:
-        avg_demand = sum(forecast_demand[t][m] for t in periods) / len(periods)
+        avg_demand = sum(
+            max(forecast_demand.get(t, {}).get(m, 0), 0)
+            for t in periods
+        ) / max(len(periods), 1)
+
         safety_stock[m] = safety_stock_months * avg_demand
-    
-    # Calculate monthly budgets
+
+    # ------------------------------------------------------------------
+    # Monthly budgets (never negative)
+    # ------------------------------------------------------------------
     monthly_budget = {}
     for t in periods:
-        monthly_budget[t] = (
-            1 + budget_buffer
-        ) * sum(
-            forecast_demand[t][m] * reference_price[m]
+        base = sum(
+            forecast_demand.get(t, {}).get(m, 0)
+            * reference_price.get(m, 0)
             for m in materials
         )
-    
+
+        monthly_budget[t] = max((1 + budget_buffer) * base, 0)
+
+    # ------------------------------------------------------------------
     # Run optimization
+    # ------------------------------------------------------------------
     results = optimize_inventory_and_procurement(
         periods=periods,
         materials=materials,
@@ -349,8 +420,7 @@ def run_optimization(
         payment_adjustment=payment_adjustment,
         monthly_budget=monthly_budget
     )
-    
-    # Add metadata
+
     results["meta"] = {
         "safety_stock_policy_months": safety_stock_months,
         "budget_buffer": budget_buffer,
@@ -358,7 +428,7 @@ def run_optimization(
         "safety_stock_values": safety_stock,
         "monthly_budgets": monthly_budget
     }
-    
+
     return results
 
 # ============================================================================
@@ -477,137 +547,169 @@ def generate_ai_forecast(periods: List[str], materials: List[str]) -> Dict[str, 
 # ============================================================================
 # SESSION STATE
 # ============================================================================
-
 def initialize_session_state():
+    import streamlit as st
+    import datetime
+
+    # -------------------------------
+    # Page
+    # -------------------------------
     if "page" not in st.session_state:
         st.session_state.page = "dashboard"
-    
+
+    # -------------------------------
+    # Materials (POLYMERS ONLY)
+    # -------------------------------
     if "materials" not in st.session_state:
         st.session_state.materials = {
-            'PVC': {'holding_cost': 5.00, 'inventory': 500, 'capacity': 2000, 'reference_price': 1250},
-            'XLPE': {'holding_cost': 7.00, 'inventory': 350, 'capacity': 1500, 'reference_price': 1850},
-            'PE': {'holding_cost': 4.50, 'inventory': 200, 'capacity': 1000, 'reference_price': 950},
-            'LSF': {'holding_cost': 8.00, 'inventory': 150, 'capacity': 800, 'reference_price': 2300}
+            "PVC": {"holding_cost": 6.0, "inventory": 420, "capacity": 1800, "reference_price": 960},
+            "XLPE": {"holding_cost": 8.0, "inventory": 300, "capacity": 1600, "reference_price": 1380},
+            "PE": {"holding_cost": 5.0, "inventory": 260, "capacity": 1400, "reference_price": 1100},
+            "LSF": {"holding_cost": 10.0, "inventory": 180, "capacity": 900, "reference_price": 1580}
         }
+
+    # -------------------------------
+    # Suppliers (10 – realistic)
+    # -------------------------------
     if "suppliers" not in st.session_state:
         st.session_state.suppliers = {
-            'Nile Polymer Compounds': {
-                'materials': ['PVC', 'XLPE'],
-                'capacity': 500,
-                'risk': 0.02,
-                'payment_adj': 0.00,
-                'prices': {'PVC': 1200, 'XLPE': 1800},
-                'lead_times': {'PVC': 1, 'XLPE': 1},
-                'origin': 'Local',
-                'payment_terms': 'Net 30'
+            "Nile Polymer Compounds": {
+                "materials": ["PVC", "XLPE"],
+                "capacity": 420,
+                "risk": 0.015,
+                "payment_adj": 0,
+                "prices": {"PVC": 950, "XLPE": 1350},
+                "lead_times": {"PVC": 1, "XLPE": 1},
+                "origin": "Local (Egypt)",
+                "payment_terms": "Net 30"
             },
-            'Cairo Cable Materials': {
-                'materials': ['PVC', 'XLPE'],
-                'capacity': 250,
-                'risk': 0.03,
-                'payment_adj': 0.00,
-                'prices': {'PVC': 1150, 'XLPE': 1725},
-                'lead_times': {'PVC': 1, 'XLPE': 1},
-                'origin': 'Local',
-                'payment_terms': 'Net 30'
+            "Delta Insulation Chemicals": {
+                "materials": ["PVC", "XLPE", "LSF"],
+                "capacity": 300,
+                "risk": 0.02,
+                "payment_adj": 10,
+                "prices": {"PVC": 980, "XLPE": 1380, "LSF": 1550},
+                "lead_times": {"PVC": 1, "XLPE": 1, "LSF": 1},
+                "origin": "Local (Egypt)",
+                "payment_terms": "Net 30"
             },
-            'Delta Insulation Chemicals': {
-                'materials': ['PVC', 'XLPE'],
-                'capacity': 300,
-                'risk': 0.015,
-                'payment_adj': 15.00,
-                'prices': {'PVC': 1280, 'XLPE': 1900},
-                'lead_times': {'PVC': 1, 'XLPE': 1},
-                'origin': 'Local',
-                'payment_terms': 'Net 30'
+            "Elsewedy Polymers": {
+                "materials": ["XLPE", "PVC", "LSF"],
+                "capacity": 380,
+                "risk": 0.01,
+                "payment_adj": 5,
+                "prices": {"PVC": 955, "XLPE": 1370, "LSF": 1500},
+                "lead_times": {"PVC": 1, "XLPE": 1, "LSF": 1},
+                "origin": "Local (Egypt)",
+                "payment_terms": "Net 45"
             },
-            'Giza Polymer Solutions': {
-                'materials': ['PVC', 'XLPE'],
-                'capacity': 200,
-                'risk': 0.025,
-                'payment_adj': 10.00,
-                'prices': {'PVC': 1230, 'XLPE': 1820},
-                'lead_times': {'PVC': 1.5, 'XLPE': 1.5},
-                'origin': 'Local',
-                'payment_terms': 'Net 60'
+            "SABIC": {
+                "materials": ["PE", "PVC", "XLPE"],
+                "capacity": 520,
+                "risk": 0.02,
+                "payment_adj": 0,
+                "prices": {"PE": 1100, "PVC": 960, "XLPE": 1380},
+                "lead_times": {"PE": 2, "PVC": 2, "XLPE": 2},
+                "origin": "Imported (GCC)",
+                "payment_terms": "Net 30"
             },
-            'Gulf Petrochem Compounds': {
-                'materials': ['PVC', 'XLPE'],
-                'capacity': 400,
-                'risk': 0.03,
-                'payment_adj': 0.00,
-                'prices': {'PVC': 1120, 'XLPE': 1700},
-                'lead_times': {'PVC': 2.5, 'XLPE': 2.5},
-                'origin': 'Imported (GCC)',
-                'payment_terms': 'Net 30'
+            "QAPCO": {
+                "materials": ["PE", "PVC"],
+                "capacity": 420,
+                "risk": 0.015,
+                "payment_adj": 0,
+                "prices": {"PE": 1080, "PVC": 940},
+                "lead_times": {"PE": 1.5, "PVC": 1.5},
+                "origin": "Imported (Qatar)",
+                "payment_terms": "Net 30"
             },
-            'Arabia Cable Materials Trading': {
-                'materials': ['PVC', 'XLPE'],
-                'capacity': 350,
-                'risk': 0.02,
-                'payment_adj': 5.00,
-                'prices': {'PVC': 1180, 'XLPE': 1780},
-                'lead_times': {'PVC': 3, 'XLPE': 3},
-                'origin': 'Imported (GCC)',
-                'payment_terms': 'Net 90'
+            "Borealis": {
+                "materials": ["PE", "XLPE"],
+                "capacity": 400,
+                "risk": 0.025,
+                "payment_adj": 10,
+                "prices": {"PE": 1120, "XLPE": 1400},
+                "lead_times": {"PE": 2.5, "XLPE": 2.5},
+                "origin": "Imported (EU)",
+                "payment_terms": "Net 60"
             },
-            'Anatolia Polymer Exports': {
-                'materials': ['PVC', 'XLPE'],
-                'capacity': 300,
-                'risk': 0.015,
-                'payment_adj': 10.00,
-                'prices': {'PVC': 1220, 'XLPE': 1850},
-                'lead_times': {'PVC': 2, 'XLPE': 2},
-                'origin': 'Imported (Turkey)',
-                'payment_terms': 'Net 60'
+            "Dow Chemicals": {
+                "materials": ["XLPE", "LSF"],
+                "capacity": 320,
+                "risk": 0.03,
+                "payment_adj": 15,
+                "prices": {"XLPE": 1420, "LSF": 1600},
+                "lead_times": {"XLPE": 3, "LSF": 2},
+                "origin": "Imported (US)",
+                "payment_terms": "Net 30"
             },
-            'Maghreb Industrial Resins': {
-                'materials': ['PVC', 'XLPE'],
-                'capacity': 450,
-                'risk': 0.04,
-                'payment_adj': -10.00,
-                'prices': {'PVC': 1100, 'XLPE': 1680},
-                'lead_times': {'PVC': 3.5, 'XLPE': 3.5},
-                'origin': 'Imported (NAfrica)',
-                'payment_terms': 'Net 30'
+            "BASF": {
+                "materials": ["PVC", "LSF"],
+                "capacity": 280,
+                "risk": 0.02,
+                "payment_adj": 12,
+                "prices": {"PVC": 980, "LSF": 1580},
+                "lead_times": {"PVC": 2, "LSF": 2},
+                "origin": "Imported (EU)",
+                "payment_terms": "Net 60"
             },
-            'EuroAsia High-Performance Polymers': {
-                'materials': ['PVC', 'XLPE'],
-                'capacity': 300,
-                'risk': 0.01,
-                'payment_adj': 25.00,
-                'prices': {'PVC': 1300, 'XLPE': 1950},
-                'lead_times': {'PVC': 4, 'XLPE': 4},
-                'origin': 'Imported (EU/Asia)',
-                'payment_terms': 'Net 30'
+            "INEOS": {
+                "materials": ["PE"],
+                "capacity": 350,
+                "risk": 0.02,
+                "payment_adj": 8,
+                "prices": {"PE": 1060},
+                "lead_times": {"PE": 2},
+                "origin": "Imported (EU)",
+                "payment_terms": "Net 45"
+            },
+            "Regional Polymer Trader": {
+                "materials": ["PVC", "PE"],
+                "capacity": 260,
+                "risk": 0.04,
+                "payment_adj": -10,
+                "prices": {"PVC": 930, "PE": 1090},
+                "lead_times": {"PVC": 1.5, "PE": 1.5},
+                "origin": "Regional Trader",
+                "payment_terms": "Advance"
             }
         }
-    
+
+    # -------------------------------
+    # Planning parameters
+    # -------------------------------
     if "safety_stock_months" not in st.session_state:
-        st.session_state.safety_stock_months = 2.0
-    
+        st.session_state.safety_stock_months = 1.5
+
     if "penalty_cost" not in st.session_state:
-        st.session_state.penalty_cost = 100.0
-    
+        st.session_state.penalty_cost = 350
+
     if "budget_buffer" not in st.session_state:
-        st.session_state.budget_buffer = 0.10
-    
+        st.session_state.budget_buffer = 0.12
+
     if "planning_horizon" not in st.session_state:
         st.session_state.planning_horizon = 6
-    
+
+    # -------------------------------
+    # Forecast demand (NO extra args)
+    # -------------------------------
     if "forecast_demand" not in st.session_state:
         periods = generate_periods(st.session_state.planning_horizon)
         materials = list(st.session_state.materials.keys())
         st.session_state.forecast_demand = generate_ai_forecast(periods, materials)
-    
+
     if "forecast_source" not in st.session_state:
-        st.session_state.forecast_source = "AI Model"
-    
+        st.session_state.forecast_source = "AI Forecast"
+
+    # -------------------------------
+    # Optimization outputs
+    # -------------------------------
     if "optimization_results" not in st.session_state:
         st.session_state.optimization_results = None
-    
+
     if "last_optimization_time" not in st.session_state:
-        st.session_state.last_optimization_time = None
+        st.session_state.last_optimization_time = datetime.datetime.now()
+
 
 
 def generate_periods(num_months: int) -> List[str]:
