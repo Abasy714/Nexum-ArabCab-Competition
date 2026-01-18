@@ -688,7 +688,7 @@ def initialize_session_state():
         st.session_state.budget_buffer = 0.12
 
     if "planning_horizon" not in st.session_state:
-        st.session_state.planning_horizon = 6
+        st.session_state.planning_horizon = 12
 
     # -------------------------------
     # Forecast demand (NO extra args)
