@@ -174,7 +174,7 @@ def optimize_inventory_and_procurement(
             arrivals = []
             for s in suppliers:
                 if m in supplier_materials[s]:
-                    lt = lead_time.get(s, {}).get(m, 1)
+                    lt = int(lead_time.get(s, {}).get(m, 1))  # Convert to integer for indexing
                     if i - lt >= 0:
                         arrivals.append(order[(periods[i - lt], s, m)])
             
@@ -366,22 +366,110 @@ def run_optimization(
 # ============================================================================
 
 def generate_ai_forecast(periods: List[str], materials: List[str]) -> Dict[str, Dict[str, float]]:
-    """AI Forecasting - Replace with actual API call"""
-    import random
+    """Load pre-computed SARIMAX forecasts from notebook results"""
+    import pandas as pd
+    from pathlib import Path
+    from datetime import datetime
     
     forecast = {}
-    base_demand = {
-        'PVC': 120,
-        'XLPE': 85,
-        'PE': 45,
-        'LSF': 30
+    notebooks_path = Path(__file__).parent.parent / "notebooks"
+    
+    # Mapping of materials to their forecast CSV files
+    forecast_files = {
+        'PVC': 'Forecast_PVC.csv',
+        'XLPE': 'Forecast_XLPE.csv',
+        'PE': 'Forecast_PE.csv',
+        'LSF': 'Forecast_LSF.csv'
     }
     
-    for t in periods:
-        forecast[t] = {}
-        for m in materials:
-            variation = random.uniform(0.9, 1.15)
-            forecast[t][m] = round(base_demand.get(m, 50) * variation, 2)
+    try:
+        # Load pre-computed forecasts from notebook
+        for material in materials:
+            forecast_file = forecast_files.get(material)
+            
+            if not forecast_file:
+                # Fallback for unknown materials
+                for t in periods:
+                    if t not in forecast:
+                        forecast[t] = {}
+                    forecast[t][material] = 50.0
+                continue
+            
+            file_path = notebooks_path / forecast_file
+            
+            if not file_path.exists():
+                # Fallback if file doesn't exist
+                st.warning(f"Forecast file not found: {forecast_file}. Using historical average.")
+                for t in periods:
+                    if t not in forecast:
+                        forecast[t] = {}
+                    forecast[t][material] = 50.0
+                continue
+            
+            # Load the forecast CSV
+            df_forecast = pd.read_csv(file_path)
+            
+            # Convert the DataFrame to forecast dictionary
+            # Handle both 'date' and 'period' column names
+            date_col = 'date' if 'date' in df_forecast.columns else 'period'
+            
+            if date_col in df_forecast.columns:
+                df_forecast[date_col] = pd.to_datetime(df_forecast[date_col])
+                df_forecast['period_str'] = df_forecast[date_col].dt.strftime('%Y-%m')
+            elif df_forecast.index.name in ['period', 'date'] or len(df_forecast.columns) == 1:
+                # If index is the period/date
+                df_forecast.index = pd.to_datetime(df_forecast.index)
+                df_forecast['period_str'] = df_forecast.index.strftime('%Y-%m')
+            else:
+                # Try to use the first column as period
+                df_forecast.iloc[:, 0] = pd.to_datetime(df_forecast.iloc[:, 0])
+                df_forecast['period_str'] = df_forecast.iloc[:, 0].dt.strftime('%Y-%m')
+            
+            # Get the forecast values column
+            if 'forecast_demand_tons' in df_forecast.columns:
+                value_col = 'forecast_demand_tons'
+            elif 'forecast' in df_forecast.columns:
+                value_col = 'forecast'
+            elif 'predicted' in df_forecast.columns:
+                value_col = 'predicted'
+            else:
+                # Use the last numeric column
+                numeric_cols = df_forecast.select_dtypes(include=['float64', 'int64']).columns
+                value_col = numeric_cols[-1] if len(numeric_cols) > 0 else df_forecast.columns[-1]
+            
+            # Map forecasts to requested periods
+            forecast_dict = dict(zip(df_forecast['period_str'], df_forecast[value_col]))
+            
+            # Fill in the requested periods
+            for period in periods:
+                if period not in forecast:
+                    forecast[period] = {}
+                
+                if period in forecast_dict:
+                    # Use pre-computed forecast
+                    forecast[period][material] = round(float(forecast_dict[period]), 2)
+                else:
+                    # Use average of available forecasts if period not found
+                    avg_forecast = df_forecast[value_col].mean()
+                    forecast[period][material] = round(float(avg_forecast), 2)
+        
+    except Exception as e:
+        # Fallback to historical averages if error occurs
+        st.warning(f"Using fallback forecasting due to: {str(e)}")
+        
+        base_demand = {
+            'PVC': 120,
+            'XLPE': 85,
+            'PE': 45,
+            'LSF': 30
+        }
+        
+        for t in periods:
+            forecast[t] = {}
+            for m in materials:
+                # Use base demand with slight variation
+                variation = 1.0 + (hash(t + m) % 20 - 10) / 100  # Deterministic variation
+                forecast[t][m] = round(base_demand.get(m, 50) * variation, 2)
     
     return forecast
 
@@ -403,32 +491,95 @@ def initialize_session_state():
         }
     if "suppliers" not in st.session_state:
         st.session_state.suppliers = {
-            'Alpha Corp': {
+            'Nile Polymer Compounds': {
                 'materials': ['PVC', 'XLPE'],
                 'capacity': 500,
                 'risk': 0.02,
                 'payment_adj': 0.00,
                 'prices': {'PVC': 1200, 'XLPE': 1800},
                 'lead_times': {'PVC': 1, 'XLPE': 1},
-                'origin': 'Local'  # NEW: Add default origin
+                'origin': 'Local',
+                'payment_terms': 'Net 30'
             },
-            'Beta Ltd': {
-                'materials': ['XLPE', 'PE', 'LSF'],
-                'capacity': 400,
-                'risk': 0.05,
-                'payment_adj': -24.00,
-                'prices': {'XLPE': 1750, 'PE': 900, 'LSF': 2200},
-                'lead_times': {'XLPE': 2, 'PE': 2, 'LSF': 1},
-                'origin': 'Imported'  # NEW: Add default origin
-            },
-            'Gamma Inc': {
-                'materials': ['PVC', 'PE'],
-                'capacity': 600,
+            'Cairo Cable Materials': {
+                'materials': ['PVC', 'XLPE'],
+                'capacity': 250,
                 'risk': 0.03,
+                'payment_adj': 0.00,
+                'prices': {'PVC': 1150, 'XLPE': 1725},
+                'lead_times': {'PVC': 1, 'XLPE': 1},
+                'origin': 'Local',
+                'payment_terms': 'Net 30'
+            },
+            'Delta Insulation Chemicals': {
+                'materials': ['PVC', 'XLPE'],
+                'capacity': 300,
+                'risk': 0.015,
                 'payment_adj': 15.00,
-                'prices': {'PVC': 1180, 'PE': 920},
-                'lead_times': {'PVC': 1, 'PE': 2},
-                'origin': 'Local'  # NEW: Add default origin
+                'prices': {'PVC': 1280, 'XLPE': 1900},
+                'lead_times': {'PVC': 1, 'XLPE': 1},
+                'origin': 'Local',
+                'payment_terms': 'Net 30'
+            },
+            'Giza Polymer Solutions': {
+                'materials': ['PVC', 'XLPE'],
+                'capacity': 200,
+                'risk': 0.025,
+                'payment_adj': 10.00,
+                'prices': {'PVC': 1230, 'XLPE': 1820},
+                'lead_times': {'PVC': 1.5, 'XLPE': 1.5},
+                'origin': 'Local',
+                'payment_terms': 'Net 60'
+            },
+            'Gulf Petrochem Compounds': {
+                'materials': ['PVC', 'XLPE'],
+                'capacity': 400,
+                'risk': 0.03,
+                'payment_adj': 0.00,
+                'prices': {'PVC': 1120, 'XLPE': 1700},
+                'lead_times': {'PVC': 2.5, 'XLPE': 2.5},
+                'origin': 'Imported (GCC)',
+                'payment_terms': 'Net 30'
+            },
+            'Arabia Cable Materials Trading': {
+                'materials': ['PVC', 'XLPE'],
+                'capacity': 350,
+                'risk': 0.02,
+                'payment_adj': 5.00,
+                'prices': {'PVC': 1180, 'XLPE': 1780},
+                'lead_times': {'PVC': 3, 'XLPE': 3},
+                'origin': 'Imported (GCC)',
+                'payment_terms': 'Net 90'
+            },
+            'Anatolia Polymer Exports': {
+                'materials': ['PVC', 'XLPE'],
+                'capacity': 300,
+                'risk': 0.015,
+                'payment_adj': 10.00,
+                'prices': {'PVC': 1220, 'XLPE': 1850},
+                'lead_times': {'PVC': 2, 'XLPE': 2},
+                'origin': 'Imported (Turkey)',
+                'payment_terms': 'Net 60'
+            },
+            'Maghreb Industrial Resins': {
+                'materials': ['PVC', 'XLPE'],
+                'capacity': 450,
+                'risk': 0.04,
+                'payment_adj': -10.00,
+                'prices': {'PVC': 1100, 'XLPE': 1680},
+                'lead_times': {'PVC': 3.5, 'XLPE': 3.5},
+                'origin': 'Imported (NAfrica)',
+                'payment_terms': 'Net 30'
+            },
+            'EuroAsia High-Performance Polymers': {
+                'materials': ['PVC', 'XLPE'],
+                'capacity': 300,
+                'risk': 0.01,
+                'payment_adj': 25.00,
+                'prices': {'PVC': 1300, 'XLPE': 1950},
+                'lead_times': {'PVC': 4, 'XLPE': 4},
+                'origin': 'Imported (EU/Asia)',
+                'payment_terms': 'Net 30'
             }
         }
     
@@ -1859,6 +2010,8 @@ def render_results_analysis():
         st.markdown("#### 📋 Inventory Data Table")
         
         inv_df = pd.DataFrame(results['inventory'])
+        # Remove duplicates if any exist (keep first occurrence)
+        inv_df = inv_df.drop_duplicates(subset=['period', 'material'], keep='first')
         inv_pivot = inv_df.pivot(index='period', columns='material', values='inventory')
         
         st.dataframe(
@@ -1917,6 +2070,8 @@ def render_results_analysis():
             st.warning(f"⚠️ Found {len(risky_shortages)} instances of safety stock shortages")
             
             # Shortage heatmap
+            # Remove duplicates if any exist (keep first occurrence)
+            shortages_df = shortages_df.drop_duplicates(subset=['period', 'material'], keep='first')
             shortage_pivot = shortages_df.pivot(index='period', columns='material', values='shortage')
             
             fig = go.Figure(data=go.Heatmap(
